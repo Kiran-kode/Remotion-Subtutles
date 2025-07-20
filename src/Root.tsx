@@ -6,8 +6,6 @@ import {
   captionedVideoSchema,
 } from "./CaptionedVideo";
 
-// Each <Composition> is an entry in the sidebar!
-
 export const RemotionRoot: React.FC = () => {
   return (
     <Composition
@@ -19,6 +17,9 @@ export const RemotionRoot: React.FC = () => {
       height={1920}
       defaultProps={{
         src: staticFile("sample-video.mp4"),
+
+
+
       }}
     />
   );

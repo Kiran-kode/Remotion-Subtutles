@@ -10,13 +10,15 @@ import {
   Sequence,
   useVideoConfig,
   watchStaticFile,
+  interpolate,
+  useCurrentFrame,
+  
 } from "remotion";
-import { z } from "zod";
+import { z } from "zod";    
 import SubtitlePage from "./SubtitlePage";
 import { getVideoMetadata } from "@remotion/media-utils";
 import { loadFont } from "../load-font";
 import { NoCaptionFile } from "./NoCaptionFile";
-import { Caption, createTikTokStyleCaptions } from "@remotion/captions";
 
 export type SubtitleProp = {
   startInSeconds: number;
@@ -41,24 +43,15 @@ export const calculateCaptionedVideoMetadata: CalculateMetadataFunction<
 
 const getFileExists = (file: string) => {
   const files = getStaticFiles();
-  const fileExists = files.find((f) => {
-    return f.src === file;
-  });
+  const fileExists = files.find((f) => f.src === file);
   return Boolean(fileExists);
 };
 
-// How many captions should be displayed at a time?
-// Try out:
-// - 1500 to display a lot of words at a time
-// - 200 to only display 1 word at a time
-const SWITCH_CAPTIONS_EVERY_MS = 1200;
-
-export const CaptionedVideo: React.FC<{
-  src: string;
-}> = ({ src }) => {
-  const [subtitles, setSubtitles] = useState<Caption[]>([]);
-  const [handle] = useState(() => delayRender());
+export const CaptionedVideo: React.FC<{ src: string }> = ({ src }) => {
+  const [subtitles, setSubtitles] = useState<SubtitleProp[] | null>(null); // 🟡 initially null
+  const [handle] = useState(() => delayRender("loading subtitles"));
   const { fps } = useVideoConfig();
+  const frame = useCurrentFrame();
 
   const subtitlesFile = src
     .replace(/.mp4$/, ".json")
@@ -70,10 +63,16 @@ export const CaptionedVideo: React.FC<{
     try {
       await loadFont();
       const res = await fetch(subtitlesFile);
-      const data = (await res.json()) as Caption[];
+
+      if (!res.ok) {
+        throw new Error(`Failed to fetch: ${res.statusText}`);
+      }
+
+      const data = await res.json();
       setSubtitles(data);
       continueRender(handle);
     } catch (e) {
+      console.error(" Error while loading subtitles:", e);
       cancelRender(e);
     }
   }, [handle, subtitlesFile]);
@@ -88,12 +87,21 @@ export const CaptionedVideo: React.FC<{
     return () => {
       c.cancel();
     };
-  }, [fetchSubtitles, src, subtitlesFile]);
+  }, [fetchSubtitles, subtitlesFile]);
 
-  const { pages } = useMemo(() => {
-    return createTikTokStyleCaptions({
-      combineTokensWithinMilliseconds: SWITCH_CAPTIONS_EVERY_MS,
-      captions: subtitles ?? [],
+  const pages = useMemo(() => {
+    if (!subtitles) return [];
+    return subtitles.map((subtitle, idx, arr) => {
+      const startMs = subtitle.startInSeconds * 1000;
+      const endMs =
+        idx < arr.length - 1
+          ? arr[idx + 1].startInSeconds * 1000
+          : startMs + 1500;
+      return {
+        startMs,
+        endMs,
+        text: subtitle.text,
+      };
     });
   }, [subtitles]);
 
@@ -101,35 +109,43 @@ export const CaptionedVideo: React.FC<{
     <AbsoluteFill style={{ backgroundColor: "white" }}>
       <AbsoluteFill>
         <OffthreadVideo
-          style={{
-            objectFit: "cover",
-          }}
+          style={{ objectFit: "cover" }}
           src={src}
         />
-      </AbsoluteFill>
-      {pages.map((page, index) => {
-        const nextPage = pages[index + 1] ?? null;
-        const subtitleStartFrame = (page.startMs / 1000) * fps;
-        const subtitleEndFrame = Math.min(
-          nextPage ? (nextPage.startMs / 1000) * fps : Infinity,
-          subtitleStartFrame + SWITCH_CAPTIONS_EVERY_MS,
-        );
-        const durationInFrames = subtitleEndFrame - subtitleStartFrame;
-        if (durationInFrames <= 0) {
-          return null;
-        }
+        {/* <Audio src={src} /> */}
 
-        return (
-          <Sequence
-            key={index}
-            from={subtitleStartFrame}
-            durationInFrames={durationInFrames}
-          >
-            <SubtitlePage key={index} page={page} />;
-          </Sequence>
-        );
-      })}
-      {getFileExists(subtitlesFile) ? null : <NoCaptionFile />}
+      </AbsoluteFill>
+
+      {/* Only render subtitle pages if subtitles are loaded */}
+      {subtitles &&
+        pages.map((page, index) => {
+          const subtitleStartFrame = Math.floor((page.startMs / 1000) * fps);
+          const subtitleEndFrame = Math.floor((page.endMs / 1000) * fps);
+          const durationInFrames = subtitleEndFrame - subtitleStartFrame;
+
+          if (durationInFrames <= 0) {
+            return null;
+          }
+
+          const enterProgress = interpolate(
+            frame,
+            [subtitleStartFrame, subtitleStartFrame + 10],
+            [0, 1],
+            { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
+          );
+
+          return (
+            <Sequence
+              key={index}
+              from={subtitleStartFrame}
+              durationInFrames={durationInFrames}
+            >
+              <SubtitlePage page={page} enterProgress={enterProgress} />
+            </Sequence>
+          );
+        })}
+
+      {!getFileExists(subtitlesFile) && <NoCaptionFile />}
     </AbsoluteFill>
   );
 };
